@@ -22,7 +22,10 @@ fn main() {
         stdin
             .read_line(&mut input)
             .expect("Did not enter a correct string");
-        lookup(&input.trim()).expect("Oops!");
+        let result = lookup(&input.trim());
+        if result.is_err() {
+            println!("{}", result.unwrap_err().to_string());
+        }
     }
 }
 
@@ -61,52 +64,48 @@ fn lookup(word_s: &str) -> io::Result<()> {
     let word_offset = u64::from_ne_bytes(buff_word);
     let next_offset = u64::from_ne_bytes(buff_next);
     let result = check_word(word_offset, next_offset, &mut index_file, &word_s);
-    if let Ok(indicies) = result {
-        let mut occurences = Vec::new();
-        let mut buff_sentence = [0; PREVIEW_LEN]; //30 characters long preview
-        for i in indicies {
-            if i > (PREVIEW_LEN / 2) as u64 {
-                korpus.seek(std::io::SeekFrom::Start(
-                    (i as i64 - (PREVIEW_LEN / 2) as i64) as u64,
-                ))?;
-            } else {
-                korpus.seek(std::io::SeekFrom::Start(i))?;
-            }
-            korpus.read_exact(&mut buff_sentence)?;
-            occurences.push(buff_sentence);
+    let indicies = result?;
+    let mut occurences = Vec::new();
+    let mut buff_sentence = [0; PREVIEW_LEN]; //30 characters long preview
+    for i in indicies {
+        if i > (PREVIEW_LEN / 2) as u64 {
+            korpus.seek(std::io::SeekFrom::Start(
+                (i as i64 - (PREVIEW_LEN / 2) as i64) as u64,
+            ))?;
+        } else {
+            korpus.seek(std::io::SeekFrom::Start(i))?;
         }
-        let mut count = 0;
-        let mut long_count = 0;
-        let total = occurences.len();
-        let mut input = String::new();
-        for passage in occurences {
-            let sentence = WINDOWS_1252.decode(&passage).0.replace('\n', " ");
-            println!("...{}...\n", sentence);
-            long_count += 1;
-            count += 1;
-            if count >= MAX_PREVIEWS {
-                println!("{} of {} See more? y/n", long_count, total);
-                loop {
-                    stdin()
-                        .read_line(&mut input)
-                        .expect("Did not enter a correct string");
-                    if input == "y\n" {
-                        count = 0;
-                        input = String::new();
-                        break;
-                    } else if input == "n\n" {
-                        return Ok(());
-                    } else {
-                        println!("{} Enter y/n", input);
-                    }
+        korpus.read_exact(&mut buff_sentence)?;
+        occurences.push(buff_sentence);
+    }
+    let mut count = 0;
+    let mut long_count = 0;
+    let total = occurences.len();
+    let mut input = String::new();
+    for passage in occurences {
+        let sentence = WINDOWS_1252.decode(&passage).0.replace('\n', " ");
+        println!("...{}...\n", sentence);
+        long_count += 1;
+        count += 1;
+        if count >= MAX_PREVIEWS {
+            println!("{} of {} See more? y/n", long_count, total);
+            loop {
+                stdin()
+                    .read_line(&mut input)
+                    .expect("Did not enter a correct string");
+                if input == "y\n" {
+                    count = 0;
+                    input = String::new();
+                    break;
+                } else if input == "n\n" {
+                    return Ok(());
+                } else {
+                    println!("{} Enter y/n", input);
                 }
             }
         }
-        return Ok(());
-    } else {
-        println!("{}", result.unwrap_err().to_string());
     }
-    Err(Error::new(ErrorKind::Other, "Error in lookup"))
+    Ok(())
 }
 fn check_word(
     mut word_offset: u64,
