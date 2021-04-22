@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, stdin, BufRead, BufReader, Error, ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
@@ -13,8 +13,28 @@ const PREVIEW_LEN: usize = 60;
 const MAX_PREVIEWS: i64 = 10;
 
 fn main() {
-    //generate_magic_file("magic.txt");
-    //create_index_file("IndexFile.txt");
+    //Open or generate files
+    let mut korpus = File::open("korpus").expect("Could not find korpus file to search");
+
+    //... Index File
+    let mut index_file = File::open("IndexFile.txt");
+    if index_file.is_err() {
+        println!("Couldn't find IndexFile.txt, generating a new one...");
+        create_index_file("IndexFile.txt");
+        index_file = File::open("IndexFile.txt");
+    }
+    let mut index_file = BufReader::new(index_file.expect("Failed to find or generate index file"));
+
+    //... magic.txt
+    let mut magic_file = File::open("magic.txt");
+    if magic_file.is_err() {
+        println!("Couldn't find magic.txt, generating a new one...");
+        generate_magic_file("magic.txt");
+        magic_file = File::open("magic.txt");
+    }
+    let mut magic_file = magic_file.expect("Failed to find or generate magic file");
+
+    //Handle input and run concordance
     let stdin = stdin();
     loop {
         let mut input = String::new();
@@ -22,37 +42,34 @@ fn main() {
         stdin
             .read_line(&mut input)
             .expect("Did not enter a correct string");
-        let result = lookup(&input.trim());
+        let result = lookup(&input.trim(), &mut korpus, &mut index_file, &mut magic_file);
         if result.is_err() {
             println!("{}", result.unwrap_err().to_string());
         }
     }
 }
 
-fn lookup(word_s: &str) -> io::Result<()> {
-    let mut korpus = File::open("korpus")?;
-    let mut index_file = File::open("IndexFile.txt");
-    if index_file.is_err() {
-        create_index_file("IndexFile.txt");
-        index_file = File::open("IndexFile.txt");
-    }
-    let mut index_file = BufReader::new(index_file?);
-    let mut magic_file = File::open("magic.txt");
-    if magic_file.is_err() {
-        generate_magic_file("magic.txt");
-        magic_file = File::open("magic.txt");
-    }
-    let mut magic_file = magic_file?;
+fn lookup(
+    word_s: &str,
+    korpus: &mut File,
+    index_file: &mut BufReader<File>,
+    magic_file: &mut File,
+) -> io::Result<()> {
     //Lookup in magic file!
     let w = WINDOWS_1252.encode(&word_s).0;
     let mut word = [32; 3];
+    //take prefix...
     for i in 0..w.len().min(3) {
         word[i] = w[i];
     }
+    //hash it...
     let hash = hash(&word[..3]);
     let mut buff_word = [0; 8];
+    //find where words with wanted prefix are in Index_File through lookup in magic.txt
     magic_file.seek(SeekFrom::Start(hash))?;
     magic_file.read_exact(&mut buff_word)?;
+
+    //find next prefix present in Index_file to know upper boundary of search
     let mut buff_next = [0; 8];
     loop {
         magic_file.read_exact(&mut buff_next)?;
@@ -60,13 +77,16 @@ fn lookup(word_s: &str) -> io::Result<()> {
             break;
         }
     }
+
     //Lookup in index_file!
     let word_offset = u64::from_ne_bytes(buff_word);
     let next_offset = u64::from_ne_bytes(buff_next);
-    let result = check_word(word_offset, next_offset, &mut index_file, &word_s);
+    //Get all occurances of specific word by checking indicies in Index_File from offset gotten from magic.txt
+    let result = check_word(word_offset, next_offset, index_file, &word_s);
     let indicies = result?;
     let mut occurences = Vec::new();
     let mut buff_sentence = [0; PREVIEW_LEN]; //30 characters long preview
+                                              //Get preview passages direct from korpus
     for i in indicies {
         if i > (PREVIEW_LEN / 2) as u64 {
             korpus.seek(std::io::SeekFrom::Start(
@@ -78,6 +98,7 @@ fn lookup(word_s: &str) -> io::Result<()> {
         korpus.read_exact(&mut buff_sentence)?;
         occurences.push(buff_sentence);
     }
+    //Preview a subset of all occurences and go through via user input
     let mut count = 0;
     let mut long_count = 0;
     let total = occurences.len();
@@ -109,46 +130,13 @@ fn lookup(word_s: &str) -> io::Result<()> {
 }
 fn check_word(
     mut word_offset: u64,
-    mut next_offset: u64,
+    next_offset: u64,
     i_file: &mut BufReader<File>,
     word: &str,
 ) -> io::Result<Vec<u64>> {
     let mut read_word = Vec::with_capacity(10);
     let mut false_line = Vec::with_capacity(50);
-    //Seems less efficent than just reading
-    // while next_offset - word_offset > 1000 {
-    //     let mid = (next_offset - word_offset) / 2;
-    //     i_file.seek(SeekFrom::Start(mid))?;
-    //     i_file.read_until(b'\n', &mut false_line)?;
 
-    //     i_file.read_until(b' ', &mut read_word)?;
-    //     read_word.pop(); //remove ' '
-    //     for i in 3..read_word.len() {
-    //         if let Some(c_w) = word.get(i) {
-    //             if let Some(c_c) = read_word.get(i) {
-    //                 match c_c.cmp(c_w) {
-    //                     std::cmp::Ordering::Less => {
-    //                         word_offset = mid;
-    //                     }
-    //                     std::cmp::Ordering::Equal => {
-    //                         continue;
-    //                     }
-    //                     std::cmp::Ordering::Greater => {
-    //                         next_offset = mid;
-    //                     }
-    //                 }
-    //             } else {
-    //                 word_offset = mid;
-    //                 break;
-    //             }
-    //         } else if read_word.get(i).is_some() {
-    //             next_offset = mid;
-    //             break;
-    //         } else {
-    //             break; //One should never come here
-    //         }
-    //     }
-    // }
     let mut result = String::new();
     i_file.seek(SeekFrom::Start(word_offset))?;
     loop {
@@ -177,10 +165,7 @@ Assumes Latin 1 encoding
 */
 fn hash(word: &[u8]) -> u64 {
     let mut index = 0;
-    for i in 0..word.len() {
-        if i > 2 {
-            break;
-        }
+    for i in 0..=2 {
         match word[i] {
             228 => index += 27 * 30u64.pow((2 - i) as u32), //ä
             229 => index += 28 * 30u64.pow((2 - i) as u32), //å
@@ -198,15 +183,12 @@ fn hash(word: &[u8]) -> u64 {
 /*
 Magic file using latmanshashing to create quick lookup
 Will be 30*30*30*8 combinations as all possible 3 letter combnations are (a-ö+_)^3
-Assuming Index file is passed as stdin
 */
 fn generate_magic_file(path: &str) {
-    let stdin = stdin();
     let mut prefix_i = 0;
     let mut new_offset = 0;
     let mut new_prefix = false;
     let mut prefix: [u8; 3] = [0; 3];
-    let mut file_offset = 0;
     let mut file = File::create(path).unwrap();
 
     for (offset, byte) in File::open("IndexFile.txt")
@@ -218,8 +200,10 @@ fn generate_magic_file(path: &str) {
         if byte == b'\n' || byte == b'\r' {
             if new_prefix {
                 let pos = file.seek(SeekFrom::Current(0)).unwrap();
+                //Padd difference between end of previous prefix's 8 byte index (pos) and start of current prefix's 8 byte index with ' ' characters
                 file.write_all(&vec![b' '; (hash(&prefix) - pos) as usize])
                     .unwrap();
+                //Write this prefix's index (8 bytes)
                 file.write_all(&(new_offset as u64).to_ne_bytes()).unwrap(); //Offset will be recorded as ne_bytes ([u8;8?- due to u64])
                 file.flush().unwrap();
                 new_prefix = false;
@@ -250,10 +234,9 @@ fn generate_magic_file(path: &str) {
 Function to convert token file with repeating words to a "single word"-"single occurence" file
 */
 fn create_index_file(path: &str) {
-    let stdin = stdin();
     let mut word = String::new();
     //Use to read Latin1
-    let mut rdr = BufReader::new(
+    let rdr = BufReader::new(
         DecodeReaderBytesBuilder::new()
             .encoding(Some(WINDOWS_1252))
             .build(
